@@ -20,7 +20,7 @@ class BacktestConfig:
     pf_kwargs: dict = field(
         default_factory=lambda: {"direction": "both", "freq": "1d", "fees": 0.01}
     )
-    metrics: str = field(default_factory=lambda: "calmar_ratio")
+    metrics: str = field(default_factory=lambda: "sharpe_ratio")
 
 
 class Strategy(ABC):
@@ -38,6 +38,14 @@ class Strategy(ABC):
     def get_name(self) -> str:
         """Get strat name"""
         return self.__class__.__name__
+
+    @staticmethod
+    def no_trading(signals, start, end):
+        """No signals allowed during interval"""
+        # TODO: tester pour voir si fonctionne correctement
+        sig = signals.to_frame()
+        sig[(sig.index.hour >= start) | (sig.index.hour <= end)] = False
+        return sig
 
 
 class Ma(Strategy):
@@ -200,3 +208,4 @@ result = walkforward.run_optimization(close)
 print(result["metric"])
 print()
 print(result["test_metrics"])
+print()
