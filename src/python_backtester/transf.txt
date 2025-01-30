@@ -17,7 +17,9 @@ class BacktestConfig:
             "left_to_right": False,
         }
     )
-    pf_kwargs: dict = field(default_factory=lambda: {"direction": "both", "freq": "1d"})
+    pf_kwargs: dict = field(
+        default_factory=lambda: {"direction": "both", "freq": "1d", "fees": 0.01}
+    )
     metrics: str = field(default_factory=lambda: "calmar_ratio")
 
 
@@ -89,13 +91,27 @@ class TradingSystem:
         self.config = config
         self.strategy = strategy
 
-    def get_metrics(self, pf):
+    def get_metrics(self, pf, all_met=False):
         """Get metrics"""
-        name_metrics = ["sharpe_ratio", "total_return", "calmar_ratio"]
+        name_metrics = [
+            "sharpe_ratio",
+            "total_return",
+            "calmar_ratio",
+            "omega_ratio",
+            "sortino_ratio",
+            "get_init_cash",
+            "final_value",
+        ]
         metrics = {name: getattr(pf, name)() for name in name_metrics}
-        return metrics[self.config.metrics]
+        metrics["total_fees"] = pf.orders.fees.sum()
+        metrics["max_dd"] = pf.drawdowns.max_drawdown()
+        metrics["win_rate"] = pf.trades.win_rate()
+        metrics["total_trade"] = pf.trades.count()
+        metrics["best_trade"] = pf.trades.returns.max()
+        metrics["worst_trade"] = pf.trades.returns.min()
+        return metrics[self.config.metrics] if not all_met else pd.DataFrame(metrics)
 
-    def simulate_portfolio(self, price, params=None):
+    def simulate_portfolio(self, price, params=None, all_met=False):
         """Simulate portfolio"""
         if params is None:
             params = self.strategy.get_optimization_params()
@@ -104,7 +120,7 @@ class TradingSystem:
         pf = vbt.Portfolio.from_signals(
             price, entries=res.entries, exits=res.exits, **self.config.pf_kwargs
         )
-        return self.get_metrics(pf).replace(np.inf, np.nan)
+        return self.get_metrics(pf, all_met).replace(np.inf, np.nan)
 
     def simulate_holding_portfolio(self, price):
         """Simulate holding portfolio"""
@@ -143,25 +159,33 @@ class WalkForwardOptimization:
 
         # In-sample optimization
         in_perf = self.trading_system.simulate_portfolio(in_price)
-        in_perf_median = in_perf.groupby("split_idx").median()
         in_hold_perf = self.trading_system.simulate_holding_portfolio(in_price)
+        in_perf_stats = in_perf.groupby("split_idx").agg(["median", "std"])
 
         # Out-sample testing
         out_kwargs = self.get_best_parameters(in_perf)
         out_perf_opt = self.trading_system.simulate_portfolio(out_price)
-        out_perf_median = out_perf_opt.groupby("split_idx").median()
-        out_perf_test = self.trading_system.simulate_portfolio(out_price, out_kwargs)
-        out_hold_perf = self.trading_system.simulate_holding_portfolio(out_price)
-
-        return pd.DataFrame(
-            {
-                "in_sample_hold": in_hold_perf,
-                "in_sample_median": in_perf_median,
-                "out_hold_perf": out_hold_perf,
-                "out_sample_median": out_perf_median,
-                "out_sample_test": out_perf_test.values,
-            }
+        out_perf_stats = out_perf_opt.groupby("split_idx").agg(["median", "std"])
+        out_perf_test = self.trading_system.simulate_portfolio(
+            out_price, out_kwargs, all_met=True
         )
+        out_hold_perf = self.trading_system.simulate_holding_portfolio(out_price)
+        return {
+            "metric": pd.DataFrame(
+                {
+                    "in_sample_hold": in_hold_perf,
+                    "in_sample_median": in_perf_stats["median"],
+                    "in_sample_std": in_perf_stats["std"],
+                    "out_hold_perf": out_hold_perf,
+                    "out_sample_median": out_perf_stats["median"],
+                    "out_sample_std": out_perf_stats["std"],
+                    "out_sample_test": out_perf_test[
+                        self.trading_system.config.metrics
+                    ].values,
+                }
+            ),
+            "test_metrics": out_perf_test,
+        }
 
 
 close = btc = vbt.GBMData.download(
@@ -173,4 +197,6 @@ strat = Ma()
 system = TradingSystem(conf, strat)
 walkforward = WalkForwardOptimization(system)
 result = walkforward.run_optimization(close)
-print(result)
+print(result["metric"])
+print()
+print(result["test_metrics"])
