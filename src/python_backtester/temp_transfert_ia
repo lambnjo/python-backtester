@@ -1,0 +1,129 @@
+import sounddevice as sd
+import numpy as np
+import scipy.io.wavfile as wav
+import openai
+import io
+import tempfile
+import pygame
+from langchain.agents import initialize_agent, Tool
+from langchain.tools import BaseTool
+from langchain_openai import ChatOpenAI
+
+# Configuration de l'API OpenAI
+openai.api_key = 'votre_clé_api_openai'
+
+# Paramètres d'enregistrement audio
+SAMPLE_RATE = 44100
+DURATION = 5  # durée d'enregistrement en secondes
+
+# Fonctions audio (comme précédemment)
+def record_audio():
+    print("Parlez maintenant...")
+    audio = sd.rec(int(DURATION * SAMPLE_RATE), samplerate=SAMPLE_RATE, channels=1)
+    sd.wait()
+    return audio
+
+def save_audio(audio, filename):
+    wav.write(filename, SAMPLE_RATE, audio)
+
+def transcribe_audio(filename):
+    with open(filename, "rb") as audio_file:
+        transcript = openai.Audio.transcribe("whisper-1", audio_file)
+    return transcript["text"]
+
+def text_to_speech(text):
+    response = openai.Audio.create(
+        model="tts-1",
+        voice="alloy",
+        input=text
+    )
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_file:
+        tmp_file.write(response.content)
+        return tmp_file.name
+
+def play_audio(filename):
+    pygame.mixer.init()
+    pygame.mixer.music.load(filename)
+    pygame.mixer.music.play()
+    while pygame.mixer.music.get_busy():
+        pygame.time.Clock().tick(10)
+
+# Outil personnalisé pour interagir avec la base de données
+class DatabaseTool(BaseTool):
+    name = "Database Query"
+    description = "Useful for querying the database for information"
+
+    def _run(self, query: str) -> str:
+        # Implémentez ici la logique pour interroger votre base de données
+        # et retourner les résultats
+        return f"Résultat de la requête : {query}"
+
+# Initialiser GPT-4o
+gpt4o = ChatOpenAI(model="gpt-4")
+
+# Créer les outils
+tools = [
+    DatabaseTool(),
+    # Ajoutez d'autres outils si nécessaire
+]
+
+# Initialiser l'agent
+agent = initialize_agent(tools, gpt4o, agent="zero-shot-react-description", verbose=True)
+
+# Boucle principale de conversation
+def main():
+    print("Assistant vocal GPT-4o avec accès à la base de données prêt. Dites quelque chose !")
+    
+    while True:
+        # Enregistrement et transcription de l'audio
+        audio = record_audio()
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
+            save_audio(audio, tmp_file.name)
+            user_input = transcribe_audio(tmp_file.name)
+        
+        print(f"Vous avez dit : {user_input}")
+        
+        if user_input.lower() in ['quitter', 'au revoir', 'bye']:
+            print("Au revoir !")
+            break
+        
+        # Utilisation de l'agent pour obtenir une réponse
+        agent_response = agent.run(user_input)
+        print(f"Réponse de l'agent : {agent_response}")
+        
+        # Conversion de la réponse en audio et lecture
+        audio_response = text_to_speech(agent_response)
+        play_audio(audio_response)
+
+if __name__ == "__main__":
+    main()
+==================
+explication du block db 
+from langchain.tools import BaseTool
+import psycopg2  # Pour PostgreSQL
+
+class DatabaseTool(BaseTool):
+    name = "Database Query"
+    description = "Useful for querying the database for information about watches"
+
+    def __init__(self):
+        super().__init__()
+        self.conn = psycopg2.connect(
+            dbname="votre_db",
+            user="votre_user",
+            password="votre_password",
+            host="votre_host"
+        )
+
+    def _run(self, query: str) -> str:
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute(query)
+                results = cur.fetchall()
+                return str(results)  # Convertit les résultats en chaîne
+        except Exception as e:
+            return f"Erreur lors de l'exécution de la requête : {str(e)}"
+
+    def _arun(self, query: str):
+        # Pour une utilisation asynchrone si nécessaire
+        raise NotImplementedError("DatabaseTool does not support async")
